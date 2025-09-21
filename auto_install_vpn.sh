@@ -15,7 +15,7 @@ NC='\033[0m'
 # GitHub Whitelist Config
 GITHUB_TOKEN="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" # Ganti dengan token asli
 GITHUB_REPO="sujinwo150/vpn-whitelist"
-WHITELIST_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/vps-whitelist.txt"
+WHITELIST_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/blob/main/vps-whitelist.txt"
 
 # Log file
 LOG_FILE="/var/log/vpn-install.log"
