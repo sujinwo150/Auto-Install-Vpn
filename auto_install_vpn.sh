@@ -7,7 +7,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-GITHUB_TOKEN="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"
 LOG_FILE="/var/log/vpn-install.log"
 
 log() { echo "$1" | tee -a "$LOG_FILE"; }
@@ -30,7 +29,11 @@ fi
 log "Detected OS: $OS $OS_VERSION"
 
 log "Updating system and installing dependencies..."
-[[ "$OS" == "Debian" && "$OS_VERSION" == "9" ]] && apt-get update && apt-get upgrade -y && apt-get install -y curl wget unzip ufw iptables-persistent net-tools jq certbot python3-certbot-nginx openssh-server dropbear stunnel4 pptpd uuid-runtime || apt update && apt upgrade -y && apt install -y curl wget unzip ufw iptables-persistent net-tools jq certbot python3-certbot-nginx openssh-server dropbear stunnel4 pptpd uuid-runtime
+if [[ "$OS" == "Debian" && "$OS_VERSION" == "9" ]]; then
+    apt-get update && apt-get upgrade -y && apt-get install -y curl wget unzip ufw iptables-persistent net-tools jq certbot python3-certbot-nginx openssh-server dropbear stunnel4 pptpd uuid-runtime || error "Failed to install dependencies."
+else
+    apt update && apt upgrade -y && apt install -y curl wget unzip ufw iptables-persistent net-tools jq certbot python3-certbot-nginx openssh-server dropbear stunnel4 pptpd uuid-runtime || error "Failed to install dependencies."
+fi
 
 ufw allow OpenSSH
 ufw allow 80,443,8443,8080,8444/tcp
@@ -49,19 +52,19 @@ SSH_DAYS=${SSH_DAYS:-30}
 read -p "Batas bandwidth (GB, default 10): " SSH_BANDWIDTH
 SSH_BANDWIDTH=${SSH_BANDWIDTH:-10}
 
-useradd -m -s /bin/bash "$SSH_USER"
-echo "$SSH_USER:$SSH_PASS" | chpasswd
-chage -M "$SSH_DAYS" "$SSH_USER"
+useradd -m -s /bin/bash "$SSH_USER" || error "Failed to add user $SSH_USER."
+echo "$SSH_USER:$SSH_PASS" | chpasswd || error "Failed to set password for $SSH_USER."
+chage -M "$SSH_DAYS" "$SSH_USER" || error "Failed to set expiry for $SSH_USER."
 log "SSH User '$SSH_USER' added with $SSH_DAYS days expiry and $SSH_BANDWIDTH GB bandwidth."
 
 log "Installing SSH Tunneling..."
 sed -i 's/#Port 22/Port 22\nPort 443/' /etc/ssh/sshd_config
-systemctl restart ssh
+systemctl restart ssh || error "Failed to restart SSH."
 ufw allow 22,443/tcp
 
 sed -i 's/NO_START=1/NO_START=0/' /etc/default/dropbear
 sed -i 's/DROPBEAR_PORT=22/DROPBEAR_PORT="80 442"/' /etc/default/dropbear
-systemctl restart dropbear
+systemctl restart dropbear || error "Failed to restart Dropbear."
 ufw allow 80,442/tcp
 
 cat > /etc/stunnel/stunnel.conf <<EOF
@@ -72,7 +75,7 @@ accept = 443
 connect = 127.0.0.1:22
 EOF
 systemctl enable stunnel4
-systemctl restart stunnel4
+systemctl restart stunnel4 || error "Failed to restart Stunnel."
 
 UID=$(id -u "$SSH_USER")
 tc qdisc add dev eth0 root handle 1: htb default 10 2>/dev/null || true
@@ -93,7 +96,7 @@ EOF
 log "SSH config saved to /root/vpn-configs/ssh-client.txt"
 
 log "Installing WireGuard..."
-curl -O https://raw.githubusercontent.com/hwdsl2/wireguard-install/master/wireguard-install.sh
+curl -O https://raw.githubusercontent.com/hwdsl2/wireguard-install/master/wireguard-install.sh || error "Failed to download WireGuard script."
 chmod +x wireguard-install.sh
 ./wireguard-install.sh <<EOF
 1
@@ -106,7 +109,7 @@ ufw allow 51820/udp
 log "WireGuard installed. Config: /root/vpn-configs/wireguard.conf"
 
 log "Installing OpenVPN..."
-wget https://git.io/vpn -O openvpn-install.sh
+wget https://git.io/vpn -O openvpn-install.sh || error "Failed to download OpenVPN script."
 chmod +x openvpn-install.sh
 ./openvpn-install.sh <<EOF
 1
@@ -119,7 +122,7 @@ ufw allow 1194/udp
 log "OpenVPN installed. Config: /root/vpn-configs/openvpn.ovpn"
 
 log "Installing Xray (V2Ray/VMess/VLESS/Trojan/gRPC)..."
-bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)
+bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) || error "Failed to install Xray."
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "inbounds": [
@@ -149,13 +152,13 @@ cat > /usr/local/etc/xray/config.json <<EOF
   "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
-systemctl restart xray
+systemctl restart xray || error "Failed to restart Xray."
 ufw allow 443,8443,8080,8444/tcp
 cp /usr/local/etc/xray/config.json /root/vpn-configs/xray-config.json
 log "Xray installed with gRPC. Config: /root/vpn-configs/xray-config.json"
 
 log "Installing IPsec/L2TP..."
-wget https://get.vpnsetup.net -O vpn.sh
+wget https://get.vpnsetup.net -O vpn.sh || error "Failed to download IPsec/L2TP script."
 chmod +x vpn.sh
 ./vpn.sh <<EOF
 y
@@ -170,7 +173,7 @@ localip 192.168.0.1
 remoteip 192.168.0.234-238,192.168.0.245
 EOF
 echo "vpnuser pptpd vpnpass *" >> /etc/ppp/chap-secrets
-systemctl restart pptpd
+systemctl restart pptpd || error "Failed to restart PPTP."
 ufw allow 1723/tcp
 log "PPTP installed. User: vpnuser, Pass: vpnpass (edit /etc/ppp/chap-secrets)"
 
@@ -196,8 +199,8 @@ if [[ $USE_DOMAIN == "y" ]]; then
     else
         log "Manual setup: Add A record for $DOMAIN to $VPS_IP in your DNS provider."
     fi
-    apt install -y nginx
-    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@"$DOMAIN"
+    apt install -y nginx || error "Failed to install Nginx."
+    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@"$DOMAIN" || error "Failed to install Let's Encrypt."
     cat > /etc/nginx/sites-available/vpn <<EOF
 server {
     listen 80;
@@ -218,7 +221,7 @@ server {
 }
 EOF
     ln -s /etc/nginx/sites-available/vpn /etc/nginx/sites-enabled/
-    systemctl restart nginx
+    systemctl restart nginx || error "Failed to restart Nginx."
     log "Domain $DOMAIN setup with TLS and gRPC."
 fi
 
@@ -262,8 +265,18 @@ manage_users() {
         read -p "Enter choice (0-7): " subchoice
         case $subchoice in
             1) manage_ssh_users ;;
-            2) bash wireguard-install.sh ;;
-            3) bash openvpn-install.sh ;;
+            2)
+                curl -O https://raw.githubusercontent.com/hwdsl2/wireguard-install/master/wireguard-install.sh
+                chmod +x wireguard-install.sh
+                bash wireguard-install.sh
+                rm wireguard-install.sh
+                ;;
+            3)
+                wget https://git.io/vpn -O openvpn-install.sh
+                chmod +x openvpn-install.sh
+                bash openvpn-install.sh
+                rm openvpn-install.sh
+                ;;
             4) nano /usr/local/etc/xray/config.json; systemctl restart xray ;;
             5) nano /etc/ppp/chap-secrets; systemctl restart ipsec xl2tpd ;;
             6) nano /etc/ppp/chap-secrets; systemctl restart pptpd ;;
@@ -293,9 +306,9 @@ manage_ssh_users() {
                 echo
                 read -p "Active days: " NEW_DAYS
                 read -p "Bandwidth GB: " NEW_BANDWIDTH
-                useradd -m -s /bin/bash "$NEW_USER"
-                echo "$NEW_USER:$NEW_PASS" | chpasswd
-                chage -M "$NEW_DAYS" "$NEW_USER"
+                useradd -m -s /bin/bash "$NEW_USER" || error "Failed to add user $NEW_USER."
+                echo "$NEW_USER:$NEW_PASS" | chpasswd || error "Failed to set password for $NEW_USER."
+                chage -M "$NEW_DAYS" "$NEW_USER" || error "Failed to set expiry for $NEW_USER."
                 NEW_UID=$(id -u "$NEW_USER")
                 tc class add dev eth0 parent 1: classid 1:2 htb rate "${NEW_BANDWIDTH}gbit" 2>/dev/null || true
                 tc filter add dev eth0 protocol ip prio 1 u32 match ip src 0.0.0.0/0 match uid "$NEW_UID" 0xffff flowid 1:2 2>/dev/null || true
@@ -305,7 +318,7 @@ manage_ssh_users() {
                 ;;
             2)
                 read -p "Username to delete: " DEL_USER
-                userdel -r "$DEL_USER" 2>/dev/null
+                userdel -r "$DEL_USER" 2>/dev/null || log "User $DEL_USER not found."
                 log "SSH User '$DEL_USER' deleted."
                 ;;
             3)
@@ -315,7 +328,7 @@ manage_ssh_users() {
             4)
                 read -p "Username: " EXT_USER
                 read -p "Additional days: " EXT_DAYS
-                chage -M -1 "$EXT_USER"
+                chage -M -1 "$EXT_USER" || error "Failed to extend $EXT_USER."
                 chage -M "$(( $(chage -l "$EXT_USER" | grep "Maximum number of days" | awk '{print $NF}' ) + EXT_DAYS ))" "$EXT_USER"
                 log "Extended $EXT_USER by $EXT_DAYS days."
                 ;;
@@ -364,7 +377,7 @@ setting_menu() {
             2)
                 read -p "Port to change (e.g., SSH 22 to 2222): " port_change
                 sed -i "s/Port 22/Port $port_change/" /etc/ssh/sshd_config
-                systemctl restart ssh
+                systemctl restart ssh || error "Failed to restart SSH."
                 log "Port changed to $port_change."
                 ;;
             3) return ;;
@@ -391,7 +404,7 @@ setup_domain_menu() {
                 curl -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records" \
                      -H "Authorization: Bearer $CF_TOKEN" \
                      -H "Content-Type: application/json" \
-                     --data "{\"type\":\"A\",\"name\":\"$DOMAIN\",\"content\":\"$VPS_IP\",\"ttl\":120,\"proxied\":false}"
+                     --data "{\"type\":\"A\",\"name\":\"$DOMAIN\",\"content\":\"$VPS_IP\",\"ttl\":120,\"proxied\":false}" || log "Cloudflare API failed; set manual A record."
                 log "A record added for $DOMAIN via Cloudflare."
                 ;;
             3)
@@ -404,8 +417,8 @@ setup_domain_menu() {
                 ;;
             4)
                 read -p "Domain: " DOMAIN
-                apt install -y nginx
-                certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@"$DOMAIN"
+                apt install -y nginx || error "Failed to install Nginx."
+                certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@"$DOMAIN" || error "Failed to install Let's Encrypt."
                 cat > /etc/nginx/sites-available/vpn <<EOF
 server {
     listen 80;
@@ -426,7 +439,7 @@ server {
 }
 EOF
                 ln -s /etc/nginx/sites-available/vpn /etc/nginx/sites-enabled/
-                systemctl restart nginx
+                systemctl restart nginx || error "Failed to restart Nginx."
                 log "Nginx and Let's Encrypt installed for $DOMAIN with gRPC."
                 ;;
             5) return ;;
@@ -492,7 +505,7 @@ uninstall_menu() {
         read -p "Enter choice (1-8): " unchoice
         case $unchoice in
             1)
-                userdel -r "$SSH_USER" 2>/dev/null
+                userdel -r "$SSH_USER" 2>/dev/null || log "User $SSH_USER not found."
                 systemctl stop ssh dropbear stunnel4
                 apt purge -y openssh-server dropbear stunnel4
                 ufw delete allow 22,443,80,442/tcp
@@ -529,7 +542,7 @@ uninstall_menu() {
                 log "PPTP uninstalled."
                 ;;
             7)
-                userdel -r "$SSH_USER" 2>/dev/null
+                userdel -r "$SSH_USER" 2>/dev/null || log "User $SSH_USER not found."
                 systemctl stop ssh dropbear stunnel4 wg-quick@wg0 openvpn xray pptpd
                 apt purge -y openssh-server dropbear stunnel4 wireguard openvpn strongswan xl2tpd pptpd
                 bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) remove
